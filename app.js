@@ -22,6 +22,17 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 const day = iso => { if (!iso) return '—'; const [y, m, d] = iso.slice(0, 10).split('-').map(Number); return `${MONTHS[m - 1]} ${d}`; };
 const range = (s, e) => `${day(s)} – ${day(e)}, ${e.slice(0, 4)}`;
 const when = iso => { if (!iso) return '—'; const d = new Date(iso); return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); };
+const STRATEGY = { LEGACY_FOR_SALES: 'Dynamic bids – down only', AUTO_FOR_SALES: 'Dynamic bids – up and down', MANUAL: 'Fixed bids', RULE_BASED: 'Rule-based bidding' };
+const strategy = s => s == null ? '—' : (STRATEGY[s] || s);
+const days = p => { const d = String(p || '').match(/\d{4}-\d{2}-\d{2}/g) || []; return !d.length ? (p || '—') : d.length === 1 || d[0] === d[1] ? day(d[0]) : `${day(d[0])} – ${day(d[1])}`; };
+/* a recorded settings change in plain words: Amazon's field names and values become what Bo sees in the console */
+const CHANGE = {
+  daily_budget: ['Daily budget', v => v == null ? '—' : money(v, num(v) % 1 ? 2 : 0)],
+  bidding_strategy: ['Bidding', strategy],
+  state: ['Status', v => v == null ? '—' : String(v).toLowerCase()],
+  name: ['Name', v => v == null ? '—' : v],
+};
+const change = lc => { const [label, f] = CHANGE[lc.field] || [lc.field.replace(/_/g, ' '), v => v == null ? '—' : v]; return `${day(lc.seen)} · ${label}: ${f(lc.from)} → ${f(lc.to)}`; };
 const isPhone = () => window.matchMedia('(max-width:760px)').matches;
 
 const ICONS = {
@@ -64,7 +75,7 @@ async function load() {
 const PAGES = [
   { id: 'overview', t: 'Overview', ic: 'grid', sub: 'US marketplace · Sponsored Products · account time zone' },
   { id: 'action', t: 'Action Center', ic: 'check', sub: 'Suggestions waiting for your decision · nothing changes on Amazon until you upload the file yourself' },
-  { id: 'campaigns', t: 'Campaign Monitor', ic: 'ads', sub: 'Every campaign with spend in the period, including paused ones · sorted by spend' },
+  { id: 'campaigns', t: 'Campaign Monitor', ic: 'ads', sub: 'Every campaign with spend in the period, paused ones included · sorted by spend' },
   { id: 'products', t: 'Product Profitability', ic: 'box', sub: 'Total sales from Seller Central, all ad spend, and what is left after ads' },
   { id: 'alerts', t: 'Alerts', ic: 'bell', sub: 'Things that need a look · acknowledging is not the same as resolving' },
   { id: 'health', t: 'Health & Settings', ic: 'pulse', sub: 'Is the data fresh, did every job run, are backups working' },
@@ -210,16 +221,21 @@ function action() {
 
 /* ------------------------------------------------------------------------------------- campaigns */
 let campFilter = 'all';
+let showIdle = false;
+/* paused or archived and nothing spent in the period: kept out of the way unless asked for */
+const idle = c => !/enabled/i.test(c.status) && !(num(c.spend) > 0);
 function campaigns() {
   const all = (D.camps[period] || []).slice();
   const m = (D.ov[period] || {}).meta;
   const yo = document.body.classList.contains('yoy-on');
   const list = all.filter(c => campFilter === 'all' || c.type === campFilter)
-    .filter(c => c.type !== 'SP' || num(c.spend) > 0 || !/archived/i.test(c.status))
+    .filter(c => c.type !== 'SP' || num(c.spend) > 0 || !/archived/i.test(c.status));
+  const hidden = showIdle ? 0 : list.filter(idle).length;
+  const shown = list.filter(c => showIdle || !idle(c))
     .sort((a, b) => (num(b.spend) || -1) - (num(a.spend) || -1));
-  const rows = list.map(c => {
+  const rows = shown.map(c => {
     const delta = c.acos != null && c.prior_acos != null ? num(c.acos) - num(c.prior_acos) : null;
-    const lc = c.last_change ? `${day(c.last_change.seen)} · ${c.last_change.field}: ${c.last_change.from ?? '—'} → ${c.last_change.to ?? '—'}` : 'none recorded';
+    const lc = c.last_change ? change(c.last_change) : 'none recorded';
     return `<tr data-c="${esc(c.id)}">
       <td class="nm"><b>${esc(c.name)}</b><span>${esc(c.type)} · ${esc(c.id)} · ${esc(c.status)}</span></td>
       <td class="r">${money(c.spend, 0, c.not_collected_reason)}</td><td class="r">${money(c.sales, 0, c.not_collected_reason)}</td><td class="r"><b>${pct(c.acos)}</b></td>
@@ -245,11 +261,12 @@ function campaigns() {
     <thead><tr><th class="grp" colspan="1">Campaign</th><th class="grp" colspan="6">${m ? esc(range(m.window.start, m.window.end)) : ''}</th><th class="grp" colspan="${yo ? 2 : 1}">Trend</th><th class="grp" colspan="2">Status</th><th class="grp" colspan="3">Details</th></tr>
     <tr><th>Name · type · ID</th><th class="r">Spend</th><th class="r">Ad sales</th><th class="r">ACOS</th><th class="r">Target</th><th class="r">Gap</th><th class="r">Orders</th><th class="r">ACOS vs prior</th><th class="r yoy">ACOS last year</th><th>Alert</th><th class="r">Suggestions</th><th>Targeting</th><th>Purpose</th><th>Last change seen</th></tr></thead>
     <tbody>${rows || '<tr><td colspan="14" class="na">No campaigns published for this period.</td></tr>'}</tbody>
-    <tfoot><tr><td>${list.length} campaigns · Sponsored Products totals</td><td class="r">${money(tot.spend)}</td><td class="r">${money(tot.ad_sales)}</td><td class="r">${pct(tot.acos)}</td><td colspan="${yo ? 10 : 9}"></td></tr></tfoot>
+    <tfoot><tr><td>${shown.length} campaigns · Sponsored Products totals${hidden ? ` · <button class="link" id="idle">show ${hidden} paused with no spend</button>` : showIdle ? ' · <button class="link" id="idle">hide paused with no spend</button>' : ''}</td><td class="r">${money(tot.spend)}</td><td class="r">${money(tot.ad_sales)}</td><td class="r">${pct(tot.acos)}</td><td colspan="${yo ? 10 : 9}"></td></tr></tfoot>
   </table></div></div>`;
   $('#cf').value = campFilter;
   $('#cf').onchange = e => { campFilter = e.target.value; campaigns(); };
-  $('#view tbody').onclick = e => { const tr = e.target.closest('tr[data-c]'); if (tr) campDrawer(list.find(c => c.id === tr.dataset.c)); };
+  if ($('#idle')) $('#idle').onclick = () => { showIdle = !showIdle; campaigns(); };
+  $('#view tbody').onclick = e => { const tr = e.target.closest('tr[data-c]'); if (tr) campDrawer(shown.find(c => c.id === tr.dataset.c)); };
 }
 
 let drawerTab = 'targets';
@@ -269,7 +286,7 @@ function campDrawer(c) {
       <div class="kc"><span>Spend</span><b>${money(c.spend, 2, c.not_collected_reason)}</b></div><div class="kc"><span>Ad sales</span><b>${money(c.sales, 2, c.not_collected_reason)}</b></div><div class="kc"><span>ACOS · prior</span><b>${pct(c.acos)} · ${pct(c.prior_acos)}</b></div>
       <div class="kc"><span>Orders</span><b>${c.orders == null ? na() : int(c.orders)}</b></div><div class="kc"><span>Clicks</span><b>${c.clicks == null ? na() : int(c.clicks)}</b></div><div class="kc"><span>Impressions</span><b>${c.impressions == null ? na() : int(c.impressions)}</b></div>
     </div>
-    <dl class="kv-list"><dt>Daily budget</dt><dd>${c.budget == null ? '—' : money(c.budget, 2) + '/day'}</dd><dt>Bidding</dt><dd>${esc(c.strategy || '—')}</dd>
+    <dl class="kv-list"><dt>Daily budget</dt><dd>${c.budget == null ? '—' : money(c.budget, 2) + '/day'}</dd><dt>Bidding</dt><dd>${esc(strategy(c.strategy))}</dd>
       <dt>Target</dt><dd>Not set: ${esc(c.target_reason)}</dd>${c.not_collected_reason ? `<dt>Figures</dt><dd>${esc(c.not_collected_reason)}</dd>` : ''}</dl>
     <div class="tabs" role="tablist">${Object.entries(tabs).map(([k, l]) => `<button role="tab" aria-selected="${k === drawerTab}" data-tab="${k}">${l}</button>`).join('')}</div>
     <div class="tw" style="border-radius:8px"><table><thead><tr><th>${esc(tabs[drawerTab])}</th><th class="r">Spend</th><th class="r">Ad sales</th><th class="r">ACOS</th><th class="r">Orders</th><th class="r">Clicks</th></tr></thead>
@@ -329,7 +346,7 @@ function health() {
   ${note('Each part reports on its own, so a good result in one place can never hide a failure in another. Figures are as of the last nightly publish' + (D.publishedAt ? ' (' + esc(when(D.publishedAt)) + ')' : '') + '.')}
   <div class="hgrid">
   ${card('Collection', h.collection, [['Last run', esc(when(col.data.last_run)) + (col.data.result ? ' · ' + esc(col.data.result) : '')], ['Data through', esc(day(col.data.data_through))], ['Sponsored Brands / Display', 'not collected yet'], ['Needs action', esc(col.data.needs_action || 'nothing')]])}
-  ${card('Reconciliation with Amazon', h.reconciliation, rec.data.checks.map(c => [c.check.replace(/_/g, ' '), (c.ok ? 'passed' : 'out of tolerance') + ' · ' + esc(c.period)]))}
+  ${card('Reconciliation with Amazon', h.reconciliation, rec.data.checks.map(c => [c.check.replace(/_/g, ' '), (c.ok ? 'passed' : 'out of tolerance') + ' · ' + esc(days(c.period))]))}
   ${card('Backup & recovery', h.backup, [['Last backup (Backblaze)', bk.data.last_run ? esc(when(bk.data.last_run)) + ' · ' + esc(bk.data.result) : 'not recorded yet'], ['Last restore test', rt.data.last_run ? esc(when(rt.data.last_run)) + ' · ' + esc(rt.data.result) : 'not recorded yet'], ['Encryption key', 'in your 1Password']])}
   ${card('Amazon access', h.amazon_access, [['Consent given', esc(day(aa.data.consented)) + ', ' + esc((aa.data.consented || '').slice(0, 4))], ['Renew by', esc(day(aa.data.renew_by)) + ', ' + esc((aa.data.renew_by || '').slice(0, 4))], ['Expires', esc(day(aa.data.expires)) + ', ' + esc((aa.data.expires || '').slice(0, 4))]])}
   ${card('Your inputs', h.inputs, [['Product costs', esc(inp.data.product_costs)], ['Seller Central sales', esc(inp.data.seller_central_sales)], ['Protected search terms', esc(inp.data.protected_terms)]])}
