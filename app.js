@@ -381,6 +381,31 @@ $('#loginForm').onsubmit = async e => {
   if (error) { showLogin('Sign-in failed: ' + error.message); return; }
   showApp(data.session);
 };
+$('#chgPw').onclick = () => {
+  $('#layer').innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="cpT"><form class="box" id="cpForm" autocomplete="on">
+    <h3 id="cpT">Change your password</h3>
+    <p style="margin:0;font-size:12.5px;color:var(--text-3)">At least 10 characters. A few words you will remember (for example three words and a number) are both easy and strong.</p>
+    <input type="text" autocomplete="username" value="${esc($('#who').textContent)}" hidden readonly>
+    <label style="display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--text-2)">New password<input id="np1" type="password" autocomplete="new-password" minlength="10" required style="padding:10px 12px;border:1px solid var(--border-2);border-radius:9px;background:var(--panel-2);color:var(--text)"></label>
+    <label style="display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--text-2)">Type it again<input id="np2" type="password" autocomplete="new-password" minlength="10" required style="padding:10px 12px;border:1px solid var(--border-2);border-radius:9px;background:var(--panel-2);color:var(--text)"></label>
+    <div class="err" id="cpErr" role="alert" style="font-size:12.5px;color:#f59b99;min-height:18px"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn ghost" type="button" id="cpCancel">Cancel</button><button class="btn go" type="submit" id="cpGo">Save new password</button></div>
+  </form></div>`;
+  const close = () => { $('#layer').innerHTML = ''; };
+  $('#cpCancel').onclick = close;
+  $('#np1').focus();
+  $('#cpForm').onsubmit = async e => {
+    e.preventDefault();
+    const a = $('#np1').value, b = $('#np2').value;
+    if (a.length < 10) { $('#cpErr').textContent = 'Use at least 10 characters.'; return; }
+    if (a !== b) { $('#cpErr').textContent = 'The two entries are different. Type them again.'; return; }
+    $('#cpGo').disabled = true;
+    const { error } = await sb.auth.updateUser({ password: a });
+    $('#np1').value = ''; $('#np2').value = '';
+    if (error) { $('#cpGo').disabled = false; $('#cpErr').textContent = 'Not changed: ' + error.message; return; }
+    close(); toast('Password changed. Use the new one next time you sign in.');
+  };
+};
 $('#signOut').onclick = async () => { await sb.auth.signOut(); D.ov = {}; D.camps = {}; showLogin('Signed out.'); };
 window.addEventListener('hashchange', () => go(location.hash.slice(1)));
 $('#nav').addEventListener('click', e => { const a = e.target.closest('a[data-p]'); if (a) { e.preventDefault(); history.replaceState(null, '', '#' + a.dataset.p); go(a.dataset.p); } });
