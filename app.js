@@ -108,6 +108,7 @@ function go(id) {
 
 /* ------------------------------------------------------------------------------------- overview */
 function weekChart(weeks) {
+  if (!weeks.length) return '<p style="margin:0;color:var(--text-3)">No complete Monday–Sunday week of data yet.</p>';
   const W = 640, H = 230, L = 52, R = 12, T = 14, B = 34;
   const vals = weeks.flatMap(w => [num(w.spend) || 0, num(w.ad_sales) || 0]);
   const top = Math.max(1, ...vals);
