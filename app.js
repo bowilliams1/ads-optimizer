@@ -381,7 +381,7 @@ $('#loginForm').onsubmit = async e => {
   if (error) { showLogin('Sign-in failed: ' + error.message); return; }
   showApp(data.session);
 };
-$('#chgPw').onclick = () => {
+if ($('#chgPw')) $('#chgPw').onclick = () => {
   $('#layer').innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="cpT"><form class="box" id="cpForm" autocomplete="on">
     <h3 id="cpT">Change your password</h3>
     <p style="margin:0;font-size:12.5px;color:var(--text-3)">At least 10 characters. A few words you will remember (for example three words and a number) are both easy and strong.</p>
