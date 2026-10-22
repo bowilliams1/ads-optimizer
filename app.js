@@ -319,7 +319,7 @@ function campDrawer(c) {
   if (!c) return;
   const m = (D.ov[period] || {}).meta;
   const d = c.drill || {};
-  const tabs = { ad_groups: 'Ad groups', targets: 'Keywords & targets', terms: 'Search terms' };
+  const tabs = { ad_groups: 'Ad groups', targets: 'Keywords & targets', terms: 'Search terms', placements: 'Placements' };
   const list = d[drawerTab] || [];
   const totalRows = d[drawerTab + '_total'] || 0;
   const cpc = c.clicks ? null : null;
