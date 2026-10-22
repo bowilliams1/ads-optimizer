@@ -351,7 +351,7 @@ function products() {
   const ro = isPhone();
   const dropRow = d => { const r = d.result || {}; const cls = d.status === 'loaded' ? 'good' : d.status === 'new' ? 'info' : d.status === 'duplicate' ? 'warn' : 'crit';
     const txt = d.status === 'new' ? 'waiting for the next load (nightly, or ask Claude to run it now)'
-      : d.status === 'loaded' ? `${int(r.rows_published)} products loaded${r.rows_quarantined ? ', ' + int(r.rows_quarantined) + ' rows set aside' : ''}${(r.warnings || []).length ? ' · ' + esc(r.warnings.join(' · ')) : ''}`
+      : d.status === 'loaded' ? `${int(r.rows_published)} products loaded${r.rows_quarantined ? ', ' + int(r.rows_quarantined) + ' rows set aside' : ''}${(r.warnings || []).length ? ` <span class="na" title="${esc(r.warnings.join('\n'))}">(${r.warnings.length} note${r.warnings.length > 1 ? 's' : ''}, hover)</span>` : ''}`
       : esc(r.reason || r.import_status || d.status);
     return `<div class="hrow"><span><span class="chip ${cls}">${esc(d.status)}</span> ${esc(d.filename)} · ${d.interval_start ? esc(range(d.interval_start, d.interval_end)) : 'no dates'} · dropped ${esc(when(d.uploaded_at))}</span><b style="font-weight:500;max-width:60%;text-align:right">${txt}</b></div>`; };
   $('#view').innerHTML = `<div class="page">
