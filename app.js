@@ -83,6 +83,7 @@ const PAGES = [
   { id: 'campaigns', t: 'Campaign Monitor', ic: 'ads', sub: 'Every campaign with spend in the period, paused ones included · sorted by spend' },
   { id: 'products', t: 'Product Profitability', ic: 'box', sub: 'Total sales from Seller Central, all ad spend, and what is left after ads' },
   { id: 'alerts', t: 'Alerts', ic: 'bell', sub: 'Things that need a look · acknowledging is not the same as resolving' },
+  { id: 'season', t: 'Season Book', ic: 'clock', sub: 'By month, by campaign: what was spent and sold, the budget, the top keywords and their bids · so spring knows what summer looked like' },
   { id: 'health', t: 'Health & Settings', ic: 'pulse', sub: 'Is the data fresh, did every job run, are backups working' },
   { id: 'discovery', t: 'Discovery & Keywords', ic: 'search', sub: 'Second release', later: true },
   { id: 'history', t: 'Change History & Results', ic: 'clock', sub: 'Second release', later: true },
@@ -118,7 +119,7 @@ function go(id) {
   $('#pgSub').textContent = p.sub;
   $('#tools').hidden = !['overview', 'campaigns', 'products'].includes(id);
   renderNav();
-  ({ overview, action, campaigns, products, alerts, health, discovery: later, history: later })[id](p);
+  ({ overview, action, campaigns, products, alerts, season, health, discovery: later, history: later })[id](p);
   window.scrollTo(0, 0);
 }
 
@@ -420,6 +421,27 @@ function alerts() {
     if (error) { b.disabled = false; toast('Not saved: ' + error.message); return; }
     await load(); renderNav(); alerts(); toast('Moved to ' + st);
   });
+}
+
+/* ------------------------------------------------------------------------------------- season book */
+let seasonCamp = null;
+function season() {
+  const S = ((D.ov[period] || {}).season) || { months: [], campaigns: [] };
+  const months = S.months || [], camps = S.campaigns || [];
+  if (!months.length) { $('#view').innerHTML = `<div class="page"><div class="empty"><h2>The season book fills in from the nightly data</h2>Each month, each campaign: spend, ad sales, ACOS, the daily budget at month end, and the top keywords with their bids.</div></div>`; return; }
+  const sel = camps.find(c => c.id === seasonCamp) || camps[0];
+  $('#view').innerHTML = `<div class="page">
+  <section class="pn"><div class="ph"><h2>Account by month</h2><span class="sub">${esc(S.note || '')}</span></div>
+    <div class="tw"><table><thead><tr><th>Month</th><th class="r">Ad spend</th><th class="r">Ad sales</th><th class="r">ACOS</th><th class="r">Days</th></tr></thead>
+    <tbody>${months.map(m => `<tr><td>${esc(m.month)}${m.partial ? ' <span class="na">partial</span>' : ''}</td><td class="r">${money(m.spend)}</td><td class="r">${money(m.sales)}</td><td class="r">${pct(m.acos)}</td><td class="r">${int(m.days)}</td></tr>`).join('')}</tbody></table></div></section>
+  <section class="pn"><div class="ph"><h2>Campaign by month</h2><span class="sub">spend · ACOS · daily budget at month end</span></div>
+    <div class="tw"><table><thead><tr><th>Campaign</th>${months.map(m => `<th class="r">${esc(m.month)}</th>`).join('')}</tr></thead>
+    <tbody>${camps.map(c => `<tr data-sc="${esc(c.id)}" style="cursor:pointer${c.id === sel.id ? ';background:var(--panel-2)' : ''}"><td class="nm"><b>${esc(c.name)}</b></td>${months.map(m => { const v = c.months[m.month]; return `<td class="r">${v ? `${money(v.spend)}<br><span class="na">${pct(v.acos)}${v.budget_end != null ? ' · ' + money(v.budget_end) + '/d' : ''}</span>` : '<span class="na">—</span>'}</td>`; }).join('')}</tr>`).join('')}</tbody></table></div></section>
+  <section class="pn"><div class="ph"><h2>${esc(sel.name)}: top keywords</h2><span class="sub">over all data · bid as it stands today</span></div>
+    <div class="tw"><table><thead><tr><th>Keyword</th><th class="r">Spend</th><th class="r">Ad sales</th><th class="r">ACOS</th><th class="r">Orders</th><th class="r">Bid now</th><th>State</th></tr></thead>
+    <tbody>${(sel.keywords || []).map(k => `<tr><td>${esc(k.keyword)}</td><td class="r">${money(k.spend)}</td><td class="r">${money(k.sales)}</td><td class="r">${pct(k.acos)}</td><td class="r">${int(k.orders)}</td><td class="r">${k.bid_now != null ? money(k.bid_now, 2) : na()}</td><td>${esc((k.state || '').toLowerCase())}</td></tr>`).join('')}</tbody></table></div></section>
+  </div>`;
+  $('#view').querySelectorAll('[data-sc]').forEach(tr => tr.onclick = () => { seasonCamp = tr.dataset.sc; season(); });
 }
 
 /* ------------------------------------------------------------------------------------- health */
