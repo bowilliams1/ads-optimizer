@@ -51,19 +51,22 @@ const icon = (n, s = 18) => `<svg class="ic" width="${s}" height="${s}" viewBox=
 const note = html => `<div class="note">${icon('info', 16)}<div>${html}</div></div>`;
 
 /* ------------------------------------------------------------------------------------- data */
-const D = { ov: {}, camps: {}, health: {}, alerts: [], action: {}, loadedAt: null };
+const D = { ov: {}, camps: {}, health: {}, alerts: [], action: {}, products: [], dropins: [], loadedAt: null };
 let period = 'd30';
 
 async function load() {
   const p = CFG.profileId;
-  const [ov, cm, he, al, ac] = await Promise.all([
+  const [ov, cm, he, al, ac, pp, di] = await Promise.all([
     sb.from('dash_overview').select('card,period_label,coverage_start,coverage_end,maturity,data,published_at').eq('profile_id', p),
     sb.from('dash_campaign_monitor').select('campaign_id,period_label,data').eq('profile_id', p),
     sb.from('dash_health').select('item,status,data,published_at'),
     sb.from('alert').select('alert_id,severity,type,entity_type,entity_id,trigger,period_start,period_end,next_step,state,opened_at,updated_at').order('opened_at', { ascending: false }),
     sb.from('dash_action').select('item,data,published_at').eq('profile_id', p),
+    sb.from('dash_product_profit').select('product_id,data,coverage_start,coverage_end').eq('profile_id', p),
+    sb.from('dropin').select('dropin_id,kind,filename,interval_start,interval_end,uploaded_at,status,result,processed_at').eq('profile_id', p).order('uploaded_at', { ascending: false }).limit(20),
   ]);
-  for (const r of [ov, cm, he, al, ac]) if (r.error) throw r.error;
+  for (const r of [ov, cm, he, al, ac, pp, di]) if (r.error) throw r.error;
+  D.products = (pp.data || []).map(r => r.data); D.dropins = di.data || [];
   D.ov = {}; D.camps = {}; D.health = {}; D.action = {};
   for (const r of (ac.data || [])) D.action[r.item] = r.data;
   for (const r of ov.data) { (D.ov[r.period_label] ||= {})[r.card] = r.data; D.publishedAt = r.published_at; }
@@ -163,10 +166,10 @@ function overview() {
       <div class="ks">Fixed window, ignores the date buttons</div><div class="kd">${esc(range(r30.start, r30.end))}</div></div>
     <div class="kpi"><div class="kl">Sales from ads</div><div class="kv num">${money(t.ad_sales)}</div>
       <div class="ks"><span class="chip warn">last 7 days still maturing</span></div><div class="kd">7-day click attribution · mature through ${esc(day(m.mature_through))}</div></div>
-    <div class="kpi"><div class="kl">Total sales</div><div class="kv num">${na(t.total_sales_reason)}</div>
-      <div class="ks">${esc(t.total_sales_reason)}</div><div class="kd">Seller Central, all sales on Amazon</div></div>
+    <div class="kpi"><div class="kl">Total sales</div><div class="kv num">${t.total_sales != null ? money(t.total_sales) : na(t.total_sales_reason)}</div>
+      <div class="ks">${t.total_sales != null ? esc(range(t.total_sales_interval.start, t.total_sales_interval.end)) + ' · latest Seller Central file' : esc(t.total_sales_reason)}</div><div class="kd">Seller Central, all sales on Amazon · the dates the file covers, never divided into days</div></div>
     <div class="kpi"><div class="kl">ACOS · TACOS</div><div class="kv num">${pct(t.acos)}<small>ACOS</small></div>
-      <div class="ks">TACOS ${na(t.tacos_reason)} · weighted, not averaged</div><div class="kd">${esc(lbl)} · prior period ${pct(t.prior.acos)}</div></div>
+      <div class="ks">TACOS ${t.tacos != null ? pct(t.tacos) + (t.total_sales_interval ? ' (' + esc(range(t.total_sales_interval.start, t.total_sales_interval.end)) + ')' : '') : na(t.tacos_reason)} · weighted, not averaged</div><div class="kd">${esc(lbl)} · prior period ${pct(t.prior.acos)}</div></div>
     <div class="kpi"><div class="kl">Waiting for you</div><div class="kv num">${int(((D.action || {}).open || []).length + ((D.action || {}).missed || []).length)}<small>suggestions</small></div>
       <div class="ks">${openAlerts.length ? esc(openAlerts.length + ' open alert(s)') : 'No open alerts'}</div><div class="kd"><button class="link" data-go="action">Open the Action Center →</button></div></div>
   </div>
@@ -344,11 +347,51 @@ function campDrawer(c) {
 
 /* ------------------------------------------------------------------------------------- products */
 function products() {
-  $('#view').innerHTML = `<div class="page"><div class="empty"><h2>Product Profitability fills in from two inputs</h2>
-    This page shows, per product: total sales, units, all ad spend assigned to it, what is left after ads, and your target. It needs:
-    <ul><li><b>Seller Central sales</b>: your Aug 9 – Oct 7 download is checked and ready; it loads through this dashboard's drop-in (coming next)</li>
-    <li><b>Your product costs</b>: one row per product (price, cost, Amazon fees, freight, returns, what you want to keep)</li></ul>
-    Until then nothing is estimated: no guessed margins, no spread-out ad spend.</div></div>`;
+  const m = (D.ov[period] || {}).meta, sales = ((D.ov[period] || {}).sales || {}).intervals || [];
+  const ro = isPhone();
+  const dropRow = d => { const r = d.result || {}; const cls = d.status === 'loaded' ? 'good' : d.status === 'new' ? 'info' : d.status === 'duplicate' ? 'warn' : 'crit';
+    const txt = d.status === 'new' ? 'waiting for the next load (nightly, or ask Claude to run it now)'
+      : d.status === 'loaded' ? `${int(r.rows_published)} products loaded${r.rows_quarantined ? ', ' + int(r.rows_quarantined) + ' rows set aside' : ''}${(r.warnings || []).length ? ' · ' + esc(r.warnings.join(' · ')) : ''}`
+      : esc(r.reason || r.import_status || d.status);
+    return `<div class="hrow"><span><span class="chip ${cls}">${esc(d.status)}</span> ${esc(d.filename)} · ${d.interval_start ? esc(range(d.interval_start, d.interval_end)) : 'no dates'} · dropped ${esc(when(d.uploaded_at))}</span><b style="font-weight:500;max-width:60%;text-align:right">${txt}</b></div>`; };
+  $('#view').innerHTML = `<div class="page">
+  <section class="pn">
+    <div class="ph"><h2>Drop in a Seller Central Business Report</h2><span class="sub">sales by child ASIN · the dates you chose in Seller Central · 2 minutes on Monday</span></div>
+    ${ro ? '<div style="color:var(--text-3)">Drop files from a computer.</div>' : `
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:end">
+      <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--text-3)">File (CSV)<input type="file" id="dfile" accept=".csv,.txt,.xlsx" class="sel"></label>
+      <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--text-3)">First day the report covers<input type="date" id="dstart" class="sel"></label>
+      <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--text-3)">Last day<input type="date" id="dend" class="sel"></label>
+      <button class="btn go" id="dgo">Drop it in</button>
+    </div>
+    <div class="kd" style="margin-top:8px">Seller Central > Reports > Business Reports > Detail Page Sales and Traffic by Child Item > pick the dates (last Monday to Sunday) > Download CSV. The file does not say which dates it covers, so type them exactly as you chose them; the report is loaded for those dates and never divided into days. Loaded by the nightly job through the same checks as every file; ask Claude to load it now if you need the numbers today.</div>`}
+    ${D.dropins.length ? `<div style="margin-top:10px">${D.dropins.map(dropRow).join('')}</div>` : ''}
+  </section>
+  ${sales.length ? `<section class="pn"><div class="ph"><h2>Total sales and TACOS by loaded interval</h2><span class="sub">ad spend over the same dates ÷ total sales</span></div>
+    <div class="tw"><table><thead><tr><th>Interval</th><th class="r">Days</th><th class="r">Total sales</th><th class="r">Units</th><th class="r">Ad spend</th><th class="r">TACOS</th></tr></thead>
+    <tbody>${sales.map(s => `<tr><td>${esc(range(s.start, s.end))}</td><td class="r">${int(s.days)}</td><td class="r">${money(s.total_sales)}</td><td class="r">${int(s.units)}</td><td class="r">${s.ad_spend != null ? money(s.ad_spend) : na(s.tacos_reason)}</td><td class="r"><b>${s.tacos != null ? pct(s.tacos) : na(s.tacos_reason)}</b></td></tr>`).join('')}</tbody></table></div></section>` : ''}
+  ${D.products.length ? `<section class="pn"><div class="ph"><h2>Products · ${esc(range(D.products[0].interval.start, D.products[0].interval.end))}</h2><span class="sub">from the latest loaded file · conversion and Buy Box are the gates before any raise</span></div>
+    <div class="tw"><table><thead><tr><th>Product</th><th>ASIN</th><th class="r">Total sales</th><th class="r">Units</th><th class="r">Sessions</th><th class="r">Conversion</th><th class="r">Buy Box</th><th class="r">Ad spend</th><th class="r">Left after ads</th></tr></thead>
+    <tbody>${D.products.map(p => `<tr><td class="nm"><b>${esc((p.title || '').slice(0, 70))}</b></td><td>${esc(p.asin)}</td><td class="r">${money(p.total_sales)}</td><td class="r">${int(p.units)}</td><td class="r">${p.sessions == null ? na() : int(p.sessions)}</td>
+      <td class="r">${p.conversion_pct == null ? na() : pct(p.conversion_pct)}</td><td class="r">${p.buy_box_pct == null ? na() : pct(p.buy_box_pct)}</td><td class="r">${na(p.ad_spend_reason)}</td><td class="r">${na(p.contribution_reason)}</td></tr>`).join('')}</tbody></table></div>
+    <div class="pf"><span>Ad spend per product and what is left after ads need the product map and your product costs; nothing is estimated until then.</span></div></section>`
+    : `<div class="empty"><h2>No Seller Central sales loaded yet</h2>Drop the Business Report above. Then this page shows, per product: total sales, units, sessions, conversion and Buy Box, and (with your costs) what is left after ads.</div>`}
+  </div>`;
+  if ($('#dgo')) $('#dgo').onclick = async () => {
+    const f = $('#dfile').files[0], s = $('#dstart').value, e = $('#dend').value;
+    if (!f) return toast('Choose the CSV first.');
+    if (!s || !e) return toast('Type the first and last day the report covers.');
+    if (e < s) return toast('The last day is before the first day.');
+    if (f.size > 5000000) return toast('That file is over 5 MB; is it the right report?');
+    $('#dgo').disabled = true;
+    const buf = new Uint8Array(await f.arrayBuffer());
+    const hex = Array.from(buf, b => b.toString(16).padStart(2, '0')).join('');
+    const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', buf)), b => b.toString(16).padStart(2, '0')).join('');
+    const { error } = await sb.from('dropin').insert({ profile_id: CFG.profileId, kind: 'seller_business_report', filename: f.name, content: '\\x' + hex, sha256: digest, interval_start: s, interval_end: e });
+    if (error) { $('#dgo').disabled = false; toast('Not saved: ' + error.message); return; }
+    toast('Dropped in. It loads on the next nightly run, or ask Claude to load it now.');
+    await load(); products();
+  };
 }
 
 /* ------------------------------------------------------------------------------------- alerts */
