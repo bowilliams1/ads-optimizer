@@ -51,19 +51,21 @@ const icon = (n, s = 18) => `<svg class="ic" width="${s}" height="${s}" viewBox=
 const note = html => `<div class="note">${icon('info', 16)}<div>${html}</div></div>`;
 
 /* ------------------------------------------------------------------------------------- data */
-const D = { ov: {}, camps: {}, health: {}, alerts: [], loadedAt: null };
+const D = { ov: {}, camps: {}, health: {}, alerts: [], action: {}, loadedAt: null };
 let period = 'd30';
 
 async function load() {
   const p = CFG.profileId;
-  const [ov, cm, he, al] = await Promise.all([
+  const [ov, cm, he, al, ac] = await Promise.all([
     sb.from('dash_overview').select('card,period_label,coverage_start,coverage_end,maturity,data,published_at').eq('profile_id', p),
     sb.from('dash_campaign_monitor').select('campaign_id,period_label,data').eq('profile_id', p),
     sb.from('dash_health').select('item,status,data,published_at'),
     sb.from('alert').select('alert_id,severity,type,entity_type,entity_id,trigger,period_start,period_end,next_step,state,opened_at,updated_at').order('opened_at', { ascending: false }),
+    sb.from('dash_action').select('item,data,published_at').eq('profile_id', p),
   ]);
-  for (const r of [ov, cm, he, al]) if (r.error) throw r.error;
-  D.ov = {}; D.camps = {}; D.health = {};
+  for (const r of [ov, cm, he, al, ac]) if (r.error) throw r.error;
+  D.ov = {}; D.camps = {}; D.health = {}; D.action = {};
+  for (const r of (ac.data || [])) D.action[r.item] = r.data;
   for (const r of ov.data) { (D.ov[r.period_label] ||= {})[r.card] = r.data; D.publishedAt = r.published_at; }
   for (const r of cm.data) (D.camps[r.period_label] ||= []).push(r.data);
   for (const r of he.data) D.health[r.item] = r;
@@ -165,7 +167,7 @@ function overview() {
       <div class="ks">${esc(t.total_sales_reason)}</div><div class="kd">Seller Central, all sales on Amazon</div></div>
     <div class="kpi"><div class="kl">ACOS · TACOS</div><div class="kv num">${pct(t.acos)}<small>ACOS</small></div>
       <div class="ks">TACOS ${na(t.tacos_reason)} · weighted, not averaged</div><div class="kd">${esc(lbl)} · prior period ${pct(t.prior.acos)}</div></div>
-    <div class="kpi"><div class="kl">Waiting for you</div><div class="kv num">${int(t.suggestions_waiting)}<small>suggestions</small></div>
+    <div class="kpi"><div class="kl">Waiting for you</div><div class="kv num">${int(((D.action || {}).open || []).length + ((D.action || {}).missed || []).length)}<small>suggestions</small></div>
       <div class="ks">${openAlerts.length ? esc(openAlerts.length + ' open alert(s)') : 'No open alerts'}</div><div class="kd"><button class="link" data-go="action">Open the Action Center →</button></div></div>
   </div>
   <div class="grid">
@@ -177,7 +179,9 @@ function overview() {
     </section>
     <section class="pn">
       <div class="ph"><h2>Biggest decisions</h2><span class="sp"></span><button class="link" data-go="action">Action Center →</button></div>
-      <div class="lr"><div class="lt"><b>No suggestions yet</b><span>Suggestions start in shadow mode once your product costs are in and the numbers have passed Gate 1.</span></div></div>
+      ${(() => { const A = D.action || {}, top = (A.missed || []).concat(A.open || []).sort((a, b) => num(b.dollars_per_week) - num(a.dollars_per_week)).slice(0, 4);
+        return top.length ? top.map(i => `<div class="lr"><div class="lt"><b>${esc(i.campaign)}: ${esc(i.what)}</b><span>${money(i.dollars_per_week)}/week · ${i.status === 'missed' ? 'MISSED since ' + esc(day(i.since)) : 'open since ' + esc(day(i.since))}</span></div></div>`).join('')
+          : '<div class="lr"><div class="lt"><b>No open suggestions</b><span>The Monday Game Plan fills this. Every move is recorded and followed up nightly.</span></div></div>'; })()}
     </section>
     <section class="pn">
       <div class="ph"><h2>Alerts</h2><span class="sp"></span><button class="link" data-go="alerts">All →</button></div>
@@ -211,12 +215,50 @@ const chipFor = (h, label) => {
 
 /* ------------------------------------------------------------------------------------- action center */
 function action() {
-  $('#view').innerHTML = `<div class="page"><div class="empty"><h2>No suggestions yet</h2>
-    Suggestions appear here once the rules have what they need, and they start in <b>shadow mode</b> (shown, never sent to Amazon):
-    <ul><li>Your product costs, so every suggestion is judged on what you keep, not on ad ratios</li>
-    <li>Gate 1: the numbers reconciled against Amazon's own totals and approved by you</li>
-    <li>Your list of protected search terms, so nothing touches them without your look</li></ul>
-    When they come, each one shows its evidence, its dollars and its limits, and you approve, reject, defer or type your own value.</div></div>`;
+  const A = D.action || {}, S = A.scoreboard || {}, open = A.open || [], missed = A.missed || [], done = A.done || [], weeks = A.weeks || [];
+  if (!S.first_report) {
+    $('#view').innerHTML = `<div class="page"><div class="empty"><h2>The first Game Plan arrives Monday</h2>
+      Every Monday morning the Game Plan email lists the week's moves, campaign by campaign. Each one is recorded here with the money behind it.
+      Every night the system checks Campaign Manager for your changes (it only reads) and this page then shows:
+      <ul><li><b>Kept</b>: what the items you did were costing per week, minus what they cost after (measured, not estimated)</li>
+      <li><b>Leaking</b>: what the open and missed items have cost since they were suggested</li>
+      <li><b>Grown</b>: sales from the winners you scaled</li></ul></div></div>`;
+    return;
+  }
+  const g = S.grown || {}, lw = S.last_week || {};
+  const kpi = (l, v, s) => `<div class="kpi"><div class="kl">${l}</div><div class="kv num">${v}</div><div class="ks">${s}</div></div>`;
+  const row = (i, cls) => `<section class="pn ${cls || ''}" style="gap:6px">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="chip ${i.group === 'grow' ? 'good' : 'warn'}">${i.group === 'grow' ? 'GROW' : 'CUT'}</span>
+        <b style="font-size:13.5px">${esc(i.campaign)}</b><span class="sp"></span><b class="num">${money(i.dollars_per_week)}/wk</b></div>
+      <div style="font-size:13.5px">${esc(i.what)}</div>
+      <dl class="kv-list"><dt>Why</dt><dd>${esc(i.why)}</dd><dt>Expected</dt><dd>${esc(i.expected)}</dd><dt>Where</dt><dd>${esc(i.where)}</dd>
+        <dt>Since</dt><dd>${esc(day(i.since))}${i.spend_since != null ? ' · ' + money(i.spend_since) + ' spent on it since' : ''}${i.done_at ? ' · done ' + esc(day(i.done_at)) + (i.detected && i.detected.how ? ' (' + esc(i.detected.how) + ')' : '') : ''}${i.kept_per_week != null ? ' · kept ' + money(i.kept_per_week) + '/wk (measured)' : ''}${i.sales_since != null && i.group === 'grow' && i.status === 'done' ? ' · ' + money(i.sales_since) + ' in sales since' : ''}</dd></dl>
+      ${i.status === 'open' || i.status === 'missed' ? (isPhone() ? '' : `<div><button class="btn ghost" data-dismiss="${esc(i.id)}">Not doing this one</button></div>`) : ''}
+    </section>`;
+  $('#view').innerHTML = `<div class="page">
+  <div class="kpis">
+    ${kpi('Kept per week', money(S.kept_per_week), 'measured on items you did · ' + money(S.kept_total) + ' since ' + esc(day(S.first_report)))}
+    ${kpi('Still leaking per week', money(S.leaking_per_week), (S.open + missed.length) + ' open or missed · ' + money(S.leaked_since) + ' spent on them since suggested')}
+    ${kpi('Last week', `${int(lw.done)}<small>of ${int(lw.suggested)}</small>`, 'moves done · streak ' + int(S.streak) + ' week(s)')}
+    ${kpi('Grown', money(g.sales_since), `${int(g.count)} winners scaled · ACOS ${g.acos != null ? pct(num(g.acos) * 100) : 'n/a'}`)}
+  </div>
+  ${missed.length ? `<h2 style="margin:6px 0 4px;color:var(--red)">Missed: suggested, not seen on Amazon after 7 days (${missed.length})</h2>${missed.map(i => row(i, 'crit')).join('')}` : ''}
+  <h2 style="margin:10px 0 4px">Open this week (${open.length})</h2>
+  ${open.length ? open.map(i => row(i)).join('') : '<div class="pn" style="color:var(--text-3)">Nothing open. Monday brings the next plan.</div>'}
+  <h2 style="margin:10px 0 4px">Done (${int(S.done_total)})</h2>
+  ${done.length ? done.slice(0, 20).map(i => row(i, 'good')).join('') : '<div class="pn" style="color:var(--text-3)">Nothing done yet.</div>'}
+  ${weeks.length ? `<h2 style="margin:10px 0 4px">Week by week</h2><div class="tw"><table><thead><tr><th>Monday</th><th class="r">Suggested</th><th class="r">Done</th><th class="r">Missed</th><th class="r">Open</th><th class="r">Kept/wk</th></tr></thead>
+    <tbody>${weeks.map(w => `<tr><td>${esc(day(w.week))}</td><td class="r">${int(w.suggested)}</td><td class="r">${int(w.done)}</td><td class="r">${int(w.missed)}</td><td class="r">${int(w.open)}</td><td class="r">${money(w.kept_per_week)}</td></tr>`).join('')}</tbody></table></div>` : ''}
+  <div class="pf" style="margin-top:8px"><span>"Kept" is spend that was going out and stopped, measured on the same data after you acted. Not a promise of profit.</span></div>
+  </div>`;
+  $('#view').querySelectorAll('[data-dismiss]').forEach(b => b.onclick = async () => {
+    const note = prompt('Why not? (one line, optional)') ?? null;
+    if (note === null) return;
+    b.disabled = true;
+    const { error } = await sb.from('suggestion').update({ status: 'dismissed', dismissed_at: new Date().toISOString(), dismiss_note: note || null }).eq('suggestion_id', b.dataset.dismiss);
+    if (error) { b.disabled = false; toast('Not saved: ' + error.message); return; }
+    toast('Dismissed. It drops off at the next nightly update.'); b.closest('section').style.opacity = '0.5';
+  });
 }
 
 /* ------------------------------------------------------------------------------------- campaigns */
@@ -239,8 +281,8 @@ function campaigns() {
     return `<tr data-c="${esc(c.id)}">
       <td class="nm"><b>${esc(c.name)}</b><span>${esc(c.type)} · ${esc(c.id)} · ${esc(c.status)}</span></td>
       <td class="r">${money(c.spend, 0, c.not_collected_reason)}</td><td class="r">${money(c.sales, 0, c.not_collected_reason)}</td><td class="r"><b>${pct(c.acos)}</b></td>
-      <td class="r"><span class="na" title="${esc(c.target_reason)}">Target not set</span></td>
-      <td class="r"><span class="na">—</span></td>
+      <td class="r">${c.target_acos != null ? `<span title="${esc(c.target_reason)}">${pct(num(c.target_acos) * 100)}</span>` : `<span class="na" title="${esc(c.target_reason)}">Target not set</span>`}</td>
+      <td class="r">${c.gap_pts == null ? '<span class="na">—</span>' : `<span class="${num(c.gap_pts) > 0 ? 'up' : 'down'}">${num(c.gap_pts) > 0 ? '+' : ''}${num(c.gap_pts).toFixed(1)} pts</span>`}</td>
       <td class="r">${c.orders == null ? na(c.not_collected_reason) : int(c.orders)}</td>
       <td class="r">${delta == null ? '<span class="na">—</span>' : `<span class="${delta > 0 ? 'up' : delta < 0 ? 'down' : ''}">${delta > 0 ? '+' : delta < 0 ? '−' : ''}${Math.abs(delta).toFixed(1)} pts</span>`}</td>
       <td class="r yoy"><span class="na">No comparable history</span></td>
@@ -287,7 +329,7 @@ function campDrawer(c) {
       <div class="kc"><span>Orders</span><b>${c.orders == null ? na() : int(c.orders)}</b></div><div class="kc"><span>Clicks</span><b>${c.clicks == null ? na() : int(c.clicks)}</b></div><div class="kc"><span>Impressions</span><b>${c.impressions == null ? na() : int(c.impressions)}</b></div>
     </div>
     <dl class="kv-list"><dt>Daily budget</dt><dd>${c.budget == null ? '—' : money(c.budget, 2) + '/day'}</dd><dt>Bidding</dt><dd>${esc(strategy(c.strategy))}</dd>
-      <dt>Target</dt><dd>Not set: ${esc(c.target_reason)}</dd>${c.not_collected_reason ? `<dt>Figures</dt><dd>${esc(c.not_collected_reason)}</dd>` : ''}</dl>
+      <dt>Target</dt><dd>${c.target_acos != null ? pct(num(c.target_acos) * 100) + ' (' + esc(c.target_reason) + ')' : 'Not set: ' + esc(c.target_reason)}</dd>${c.not_collected_reason ? `<dt>Figures</dt><dd>${esc(c.not_collected_reason)}</dd>` : ''}</dl>
     <div class="tabs" role="tablist">${Object.entries(tabs).map(([k, l]) => `<button role="tab" aria-selected="${k === drawerTab}" data-tab="${k}">${l}</button>`).join('')}</div>
     <div class="tw" style="border-radius:8px"><table><thead><tr><th>${esc(tabs[drawerTab])}</th><th class="r">Spend</th><th class="r">Ad sales</th><th class="r">ACOS</th><th class="r">Orders</th><th class="r">Clicks</th></tr></thead>
       <tbody>${list.length ? list.map(r => `<tr><td>${esc(r.label)}</td><td class="r">${money(r.spend, 2)}</td><td class="r">${money(r.sales, 2)}</td><td class="r">${pct(r.acos)}</td><td class="r">${int(r.orders)}</td><td class="r">${int(r.clicks)}</td></tr>`).join('') : '<tr><td colspan="6" class="na">Nothing in this period.</td></tr>'}</tbody></table></div>
